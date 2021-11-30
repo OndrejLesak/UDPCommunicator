@@ -2,12 +2,12 @@ import socket
 import struct
 import math
 import os
+import time
+import threading
 from zlib import crc32
 
-
-client_socket = None
-server_socket = None
-
+keepAlive = True
+kat = None
 
 # ############## CLIENT SECTION ##############
 class Sender():
@@ -23,13 +23,15 @@ class Sender():
                 server_ip = input('Enter server ip: ')
                 server_port = int(input('Enter server port: '))
 
-                self.client_socket.sendto(header(1), (server_ip, server_port))
+                self.client_socket.sendto(createHeader(1), (server_ip, server_port))
                 self.client_socket.settimeout(10)
                 try:
                     data = self.client_socket.recv(1500)
                     data = unpackHeader(data)
-                    if data == 1:
+                    if data[0] == 1:
                         print('Connection established successfully.')
+                        self.client_socket.settimeout(None)
+                        keepAlive_thread(self.client_socket, (server_ip, server_port), 15)
                         self.sendMessage((server_ip, server_port))
 
                 except socket.timeout:
@@ -41,10 +43,12 @@ class Sender():
 
 
     def sendMessage(self, to_whom):
+        global keepAlive, kat
+
         number_of_fragments = 0
         frag_id = 1
         msgLength = 0
-        msg = None
+        msg = ''
 
         msg_type = input('Type of message: (t) Text message; (f) File: ')
         fragment_size = int(input('Enter fragment size (Bytes): '))
@@ -56,19 +60,30 @@ class Sender():
         # init message
         if msg_type == 't':
             msg = input('Content: ')
+            msg = msg.encode('utf-8')
             msgLength = len(msg)
+            killThread()
+            while True:
+                self.client_socket.sendto(createHeader(3), to_whom)
+                data = self.client_socket.recv(1500)
+                data = unpackHeader(data)
+                if data[0] == 3:
+                    break
+                else:
+                    continue
 
         elif msg_type == 'f':
             file_path = input('Enter absolute file path: ')
             file = open(file_path, 'rb')
             msgLength = os.path.getsize(file_path)
             msg = file.read()
+            killThread()
 
             # zeroth packet with file name
-            zeroMsg = file_path[file_path.rfind('/'): len(file_path)]
+            zeroMsg = file_path[file_path.rfind('/'):]
             zeroCrc = crc32(msg)
             zeroLength = len(msg)
-            zeroHeader = header(4, zeroLength, 0, zeroCrc)
+            zeroHeader = createHeader(4, zeroLength, 0, zeroCrc)
 
             while True:
                 try:
@@ -85,42 +100,38 @@ class Sender():
                     print('Timed out')
                     continue
 
-
-        if msgLength > fragment_size:
-            number_of_fragments = math.ceil(msgLength / fragment_size)
+        number_of_fragments = math.ceil(msgLength / fragment_size) # count fragments
 
         while True:
             message = msg[:fragment_size]
-            if msg_type == 't':
-                message = message.encode()
 
             crc = crc32(message)
 
             if frag_id == number_of_fragments:
                 if msg_type == 't':
-                    header = header(11, msgLength, frag_id, crc) # LAST TEXT PACKET
+                    header = createHeader(11, msgLength, frag_id, crc) # LAST TEXT PACKET
                 elif msg_type == 'f':
-                    header = header(12, msgLength, frag_id, crc) # LAST FILE PACKET
+                    header = createHeader(12, msgLength, frag_id, crc) # LAST FILE PACKET
             else:
                 if msg_type == 't':
-                    header = header(3, msgLength, frag_id, crc) # TEXT PACKET
+                    header = createHeader(3, msgLength, frag_id, crc) # TEXT PACKET
                 elif msg_type == 'f':
-                    header = header(4, msgLength, frag_id, crc) # FILE PACKET
+                    header = createHeader(4, msgLength, frag_id, crc) # FILE PACKET
 
             while True:
                 try:
                     self.client_socket.settimeout(10)
                     self.client_socket.sendto(header + message, to_whom)
-                    repsonse = self.client_socket.recv(1500)
-                    response = struct.unpack('B', response)
-                    if response == 6:
+                    response = self.client_socket.recv(1500)
+                    response = unpackHeader(response)
+                    if response[0] == 6:
                         print('Error while sending packet')
                         continue
-                    elif response == 5:
+                    elif response[0] == 5:
                         frag_id += 1
                         msg = msg[fragment_size:]
                         break
-                    elif response == 7:
+                    elif response[0] == 7:
                         print('Message sent successfully')
                         return
 
@@ -128,13 +139,37 @@ class Sender():
                     print('Message not sent')
                     continue
 
-            number_of_fragments = 0
-            frag_id = 1
 
-
-def keep_alive(clientSocket, server_addr):
+def keep_alive(clientSocket, server_addr, period):
     while True:
-        pass
+        if keepAlive != True:
+            break
+
+        clientSocket.sendto(createHeader(2), server_addr)
+        response = clientSocket.recv(1500)
+        response = unpackHeader(response)
+        if response[0] != 2:
+            print('Session got terminated')
+
+        time.sleep(period)
+
+
+def keepAlive_thread(clientSocket, server_addr, period):
+    global keepAlive, kat
+    keepAlive = True
+
+    newThread = threading.Thread(target=keep_alive, args=(clientSocket, server_addr, period))
+    newThread.daemon = True
+    newThread.start()
+
+    kat = newThread
+
+
+def killThread():
+    global kat, keepAlive
+    keepAlive = False
+    kat.join()
+
 
 # ############## SERVER SECTION ##############
 class Receiver():
@@ -151,9 +186,10 @@ class Receiver():
 
             if opt == '1':
                 data, addr = self.server_socket.recvfrom(1500)
-                if str(data.decode())[0] == '1':
+                data = unpackHeader(data)
+                if data[0] == 1:
                     print(f'Connection requested from {addr[0]}:{addr[1]}')
-                    self.server_socket.sendto('1'.encode(), addr)
+                    self.server_socket.sendto(createHeader(1), addr)
                     self.receiveMessage(addr)
 
             elif opt == '2':
@@ -165,22 +201,26 @@ class Receiver():
             self.server_socket.settimeout(20)
             try:
                 data = None
+                pcktType = None
 
                 while True:
                     data = self.server_socket.recv(1500)
-                    if str(data.decode())[0] == '2':
+                    pcktType = unpackHeader(data)
+                    if  pcktType[0] == 2:
                         print('I\'m still alive!')
-                        self.server_socket.sendto('2'.encode(), addr)
-                        data = ''
-                        break
+                        self.server_socket.sendto(createHeader(2), addr)
+                        continue
                     else:
                         break
 
-                pcktType = str(data.decode())[0]
-                if pcktType == '3':
-                    break
-                elif pcktType == '4':
-                    break
+                if pcktType[0] == 3:
+                    self.server_socket.sendto(createHeader(3), addr)
+                    self.processMessage('t', data)
+                    return
+                elif pcktType[0] == 4:
+                    self.server_socket.sendto(createHeader(5), addr)
+                    self.processMessage('f', data)
+                    return
 
             except socket.timeout:
                 print('Idle for too long...\nClosing session.')
@@ -188,18 +228,56 @@ class Receiver():
                 return
 
 
-def header(flag, length=0, fragId=0, crc=0):
-    header = struct.pack('BHHI', flag, length, fragId, crc)
+    def processMessage(self, type, header_data):
+        full_message = []
+        file_name = ''
+        last_packetId = 0
+
+        if type == 'f':
+            header = unpackHeader(header_data)
+            if header[2] == 0:
+                file_name = header_data[9:]
+
+        while True:
+            data, addr = self.server_socket.recvfrom(1500)
+            flag, length, flag_id, crc = unpackHeader(data)
+            msg = data[9:]
+
+            this_crc = crc32(msg)
+
+            if crc != this_crc:
+                print(f'Packet {flag_id} rejected')
+                self.server_socket.sendto(createHeader(6), addr)
+                continue
+            else:
+                if type == 't':
+                    full_message.append(msg.decode('utf-8'))
+                elif type == 'f':
+                    full_message.append(msg)
+
+                if flag == 3 or flag == 4:
+                    self.server_socket.sendto(createHeader(5), addr)
+                elif flag > 10:
+                    self.server_socket.sendto(createHeader(7), addr)
+                    print('Message received successfully')
+                    break
+
+        if type == 't':
+            print('Message: ', ''.join(full_message))
+
+
+
+def createHeader(flag, length=0, fragId=0, crc=0):
+    header = struct.pack('B', flag) + struct.pack('HH', length, fragId) + struct.pack('I', crc)
     return header
 
 
 def unpackHeader(header):
-    data1, data2, data3, data4 = struct.unpack('BHHI', header)
+    data1 = struct.unpack('B', header[:1])[0]
+    data2, data3 = struct.unpack('HH', header[1:5])
+    data4 = struct.unpack('I', header[5:9])[0]
 
-    if data2 == 0 and data3 == 0 and data4 == 0:
-        return data1
-    else:
-        return data1, data2, data3, data4
+    return data1, data2, data3, data4
 
 
 def menu():

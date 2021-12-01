@@ -61,7 +61,7 @@ class Sender():
         if msg_type == 't':
             msg = input('Content: ')
             msg = msg.encode('utf-8')
-            msgLength = len(msg)
+            msgLength = msgLength
             killThread()
             while True:
                 self.client_socket.sendto(createHeader(3), to_whom)
@@ -75,14 +75,15 @@ class Sender():
         elif msg_type == 'f':
             file_path = input('Enter absolute file path: ')
             file = open(file_path, 'rb')
-            msgLength = os.path.getsize(file_path)
             msg = file.read()
+            msgLength = len(msg)
             killThread()
 
             # zeroth packet with file name
-            zeroMsg = file_path[file_path.rfind('/'):]
-            zeroCrc = crc32(msg)
-            zeroLength = len(msg)
+            zeroMsg = file_path[file_path.rfind('\\')+1:]
+            zeroMsg = zeroMsg.encode()
+            zeroCrc = crc32(zeroMsg)
+            zeroLength = len(zeroMsg)
             zeroHeader = createHeader(4, zeroLength, 0, zeroCrc)
 
             while True:
@@ -104,7 +105,7 @@ class Sender():
 
         while True:
             message = msg[:fragment_size]
-
+            msgLength = len(message)
             crc = crc32(message)
 
             if frag_id == number_of_fragments:
@@ -237,6 +238,8 @@ class Receiver():
             header = unpackHeader(header_data)
             if header[2] == 0:
                 file_name = header_data[9:]
+                file_name = file_name.decode()
+                print(file_name)
 
         while True:
             data, addr = self.server_socket.recvfrom(1500)
@@ -250,6 +253,8 @@ class Receiver():
                 self.server_socket.sendto(createHeader(6), addr)
                 continue
             else:
+                print(f'Packet {flag_id} accepted')
+
                 if type == 't':
                     full_message.append(msg.decode('utf-8'))
                 elif type == 'f':
@@ -264,6 +269,17 @@ class Receiver():
 
         if type == 't':
             print('Message: ', ''.join(full_message))
+
+        elif type == 'f':
+            transFile = open(file_name, 'wb')
+
+            for part in full_message:
+                transFile.write(part)
+            transFile.close()
+
+            file_size = os.path.getsize(file_name)
+            file_path = os.path.abspath(file_name)
+            print(f'File {file_name} with size of {file_size} B was saved at {file_path}')
 
 
 

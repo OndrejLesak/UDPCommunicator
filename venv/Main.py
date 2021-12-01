@@ -61,7 +61,7 @@ class Sender():
         if msg_type == 't':
             msg = input('Content: ')
             msg = msg.encode('utf-8')
-            msgLength = msgLength
+            msgLength = len(msg)
             killThread()
             while True:
                 self.client_socket.sendto(createHeader(3), to_whom)

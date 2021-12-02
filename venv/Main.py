@@ -4,6 +4,7 @@ import math
 import os
 import time
 import threading
+import random
 from zlib import crc32
 
 keepAlive = True # keep-alive semafor
@@ -32,7 +33,7 @@ class Sender():
                         print('Connection established successfully.')
                         self.client_socket.settimeout(None)
                         while True:
-                            keepAlive_thread(self.client_socket, (server_ip, server_port), 15) # initialize keep-alive thread
+                            keepAlive_thread(self.client_socket, (server_ip, server_port), 7) # initialize keep-alive thread
 
                             msg_type = input('Type of message: (t) Text message; (f) File; (e) To exit application: ')
                             if msg_type == 'e':
@@ -57,8 +58,8 @@ class Sender():
 
         fragment_size = int(input('Enter fragment size (Bytes): '))
 
-        while fragment_size > 1463:
-            print('Maximum size of fragment is 1463 B')
+        while fragment_size > 1463 or fragment_size <= 0:
+            print('The size of fragment should be between 1B and 1463B')
             fragment_size = int(input('Enter fragment size (Bytes): '))
 
         # init message
@@ -110,6 +111,8 @@ class Sender():
 
         number_of_fragments = math.ceil(msgLength / fragment_size) # get all the fragments
 
+        err = int(input('Enter how many errors do you expect: '))
+
         while True:
             message = msg[:fragment_size]
             msgLength = len(message)
@@ -126,7 +129,10 @@ class Sender():
                 elif msg_type == 'f':
                     header = createHeader(4, msgLength, frag_id, crc) # FILE PACKET
 
-
+            if err > 0: # error simulation
+                if random.random() < 0.5:
+                    message = self.createError(message)
+                    err -= 1
 
             while True:
                 try:
@@ -150,6 +156,13 @@ class Sender():
                     continue
 
 
+    def createError(self, message):
+        message = message.decode('utf-8')
+        i = random.randint(0, len(message)-1)
+        message = message.replace(message[i], chr(ord(message[i])+1), 1)
+        return message.encode('utf-8')
+
+
 def keep_alive(clientSocket, server_addr, period):
     while True:
         if keepAlive != True:
@@ -160,6 +173,7 @@ def keep_alive(clientSocket, server_addr, period):
         response = unpackHeader(response)
         if response[0] != 2:
             print('Session got terminated')
+            break
 
         time.sleep(period)
 
@@ -209,7 +223,7 @@ class Receiver():
 
     def receiveMessage(self, addr):
         while True:
-            self.server_socket.settimeout(20)
+            self.server_socket.settimeout(10)
             try:
                 data = None
                 pcktType = None
@@ -228,7 +242,7 @@ class Receiver():
                     self.server_socket.sendto(createHeader(3), addr)
                     self.processMessage('t', data)
                     continue
-                elif pcktType[0] == 4:
+                elif pcktType[0] == 4: # check crc
                     self.server_socket.sendto(createHeader(5), addr)
                     self.processMessage('f', data)
                     continue
@@ -287,9 +301,9 @@ class Receiver():
                 transFile.write(part)
             transFile.close()
 
-            file_size = os.path.getsize(file_name)
+            file_size = os.path.getsize(file_name)/1024**2
             file_path = os.path.abspath(file_name)
-            print(f'File {file_name} with size of {file_size} B was saved at {file_path}')
+            print(f'File {file_name} with size of {file_size:.2f} MB was saved at {file_path}')
 
 
 def createHeader(flag, length=0, fragId=0, crc=0):

@@ -13,6 +13,7 @@ kat = None # actual keep-alive thread
 # ############## CLIENT SECTION ##############
 class Sender():
     client_socket = None
+    terminate = 0
 
     def __init__(self):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -33,16 +34,21 @@ class Sender():
                         print('Connection established successfully.')
                         self.client_socket.settimeout(None)
                         while True:
-                            keepAlive_thread(self.client_socket, (server_ip, server_port), 7) # initialize keep-alive thread
+                            self.keepAlive_thread((server_ip, server_port), 7) # initialize keep-alive thread
 
                             msg_type = input('Type of message: (t) Text message; (f) File; (e) To exit application: ')
-                            if msg_type == 'e':
-                                killThread()
+                            if msg_type == 'e' or self.terminate != 0:
+                                self.killThread()
+                                if self.terminate == 0: # terminate session
+                                    self.client_socket.sendto(createHeader(64), (server_ip, server_port)) # FIN
+                                else:
+                                    self.terminate = 0
                                 break
-                            else:
+                            elif msg_type == 't' or msg_type == 'f':
                                 self.sendMessage((server_ip, server_port), msg_type)
+                                msg_type = ''
 
-                except socket.timeout:
+                except (socket.timeout, socket.gaierror, ConnectionResetError):
                     print('Connection could not be established.')
                     continue
 
@@ -62,12 +68,26 @@ class Sender():
             print('The size of fragment should be between 1B and 1463B')
             fragment_size = int(input('Enter fragment size (Bytes): '))
 
+        err = int(input('Enter how many errors do you expect: ')) # number of errors
+
         # init message
         if msg_type == 't':
             msg = input('Content: ')
             msg = msg.encode('utf-8')
             msgLength = len(msg)
-            killThread()
+
+            number_of_fragments = math.ceil(msgLength / fragment_size)  # get all the fragments
+            while number_of_fragments > 65535:
+                print('Fragment size is too small')
+
+                fragment_size = int(input('Enter fragment size (Bytes): '))
+                while fragment_size > 1463 or fragment_size <= 0:
+                    print('The size of fragment should be between 1B and 1463B')
+                    fragment_size = int(input('Enter fragment size (Bytes): '))
+
+                number_of_fragments = math.ceil(msgLength / fragment_size)  # get all the fragments
+
+            self.killThread()
 
             # SEND INITIALIZATION PACKET
             while True:
@@ -88,17 +108,32 @@ class Sender():
         elif msg_type == 'f':
             while True:
                 file_path = input('Enter absolute file path: ')
+                if not os.path.isabs(file_path):
+                    print('Incorrect file path')
+                    continue
 
                 try:
                     file = open(file_path, 'rb')
                     msg = file.read()
                     break
-                except FileNotFoundError:
-                    print('File does not exist, try again')
+                except (FileNotFoundError, PermissionError):
+                    print('File does not exist, try again or you have no permmissions')
                     continue
 
             msgLength = len(msg)
-            killThread()
+
+            number_of_fragments = math.ceil(msgLength / fragment_size)  # get all the fragments
+            while number_of_fragments > 65535:
+                print('Fragment size is too small')
+
+                fragment_size = int(input('Enter fragment size (Bytes): '))
+                while fragment_size > 1463 or fragment_size <= 0:
+                    print('The size of fragment should be between 1B and 1463B')
+                    fragment_size = int(input('Enter fragment size (Bytes): '))
+
+                number_of_fragments = math.ceil(msgLength / fragment_size)  # get all the fragments
+
+            self.killThread()
 
             # zeroth packet with file name
             zeroMsg = file_path[file_path.rfind('\\')+1:]
@@ -123,16 +158,14 @@ class Sender():
                     print('Timed out')
                     return
 
-        number_of_fragments = math.ceil(msgLength / fragment_size) # get all the fragments
-
         print(f'{number_of_fragments} will be send.')
-        err = int(input('Enter how many errors do you expect: '))
 
         while True:
             message = msg[:fragment_size]
             msgLength = len(message)
             crc = crc32(message)
 
+            # INITIALIZE HEADER
             if frag_id == number_of_fragments:
                 if msg_type == 't':
                     header = createHeader(68, msgLength, frag_id, crc) # LAST TEXT PACKET
@@ -156,7 +189,7 @@ class Sender():
                     response = self.client_socket.recv(1500)
                     response = unpackHeader(response)
                     if response[0] == 32: # NACK
-                        print('Error while sending packet')
+                        print(f'Error while sending packet {frag_id}')
                         break
                     elif response[0] == 16: # ACK
                         frag_id += 1
@@ -166,9 +199,9 @@ class Sender():
                         print('Message sent successfully')
                         return
 
-                except socket.timeout:
+                except (socket.timeout, ConnectionResetError):
                     print('Message not sent')
-                    continue
+                    return
 
 
     def createError(self, message):
@@ -180,53 +213,67 @@ class Sender():
         return message
 
 
-def keep_alive(clientSocket, server_addr, period):
-    while True:
-        try:
-            if keepAlive != True:
+    def keep_alive(self, server_addr, period):
+        while True:
+            try:
+                if keepAlive != True:
+                    break
+
+                self.client_socket.settimeout(10)
+                self.client_socket.sendto(createHeader(2), server_addr)
+                response = self.client_socket.recv(1500)
+                response = unpackHeader(response)
+                if response[0] != 18:
+                    print('Session terminated')
+                    self.terminate = 1
+                    break
+
+                time.sleep(period)
+            except (socket.timeout, ConnectionResetError):
+                print('Session terminated')
+                self.terminate = 1
                 break
 
-            clientSocket.settimeout(10)
-            clientSocket.sendto(createHeader(2), server_addr)
-            response = clientSocket.recv(1500)
-            response = unpackHeader(response)
-            if response[0] != 18:
-                print('Session got terminated')
-                break
 
-            time.sleep(period)
-        except socket.timeout:
-            print('Connection terminated')
-            break
+    def keepAlive_thread(self, server_addr, period):
+        global keepAlive, kat
+        keepAlive = True
+
+        newThread = threading.Thread(target=self.keep_alive, args=(server_addr, period))
+        newThread.daemon = True
+        newThread.start()
+
+        kat = newThread
 
 
-def keepAlive_thread(clientSocket, server_addr, period):
-    global keepAlive, kat
-    keepAlive = True
-
-    newThread = threading.Thread(target=keep_alive, args=(clientSocket, server_addr, period))
-    newThread.daemon = True
-    newThread.start()
-
-    kat = newThread
-
-
-# method to terminate the keep-alive thread
-def killThread():
-    global kat, keepAlive
-    keepAlive = False
-    kat.join()
+    # method to terminate the keep-alive thread
+    def killThread(self):
+        global kat, keepAlive
+        keepAlive = False
+        kat.join()
 
 
 # ############## SERVER SECTION ##############
 class Receiver():
     server_socket = None
+    dest_file_path = None
 
     def __init__(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         server_port = int(input('Input server port number: '))
         self.server_socket.bind(('', server_port))
+
+        while True:
+            try:
+                self.dest_file_path = input('Enter file destination absolute path: ')
+                if not os.path.isabs(self.dest_file_path):
+                    print('Path is not absolute')
+                    continue
+                break
+            except NotADirectoryError:
+                print('Directory does not exist')
+                continue
 
         while True:
             opt = input('Type: (1) Wait for the connection; (2) Exit application: ')
@@ -254,6 +301,7 @@ class Receiver():
             try:
                 data = None
                 pcktType = None
+                mess = None
 
                 while True:
                     data = self.server_socket.recv(1500)
@@ -267,15 +315,25 @@ class Receiver():
 
                 if pcktType[0] == 5:
                     self.server_socket.sendto(createHeader(16), addr)
-                    self.processMessage('t', data)
-                    continue
-                elif pcktType[0] == 9: # check crc
+                    mess = self.processMessage('t', data)
+
+                elif pcktType[0] == 9:
                     self.server_socket.sendto(createHeader(16), addr)
-                    self.processMessage('f', data)
-                    continue
+                    mess = self.processMessage('f', data)
+
+                elif pcktType[0] == 64:
+                    self.server_socket.sendto(createHeader(80), addr)
+                    return
+
+                if mess == 0:
+                    return
 
             except socket.timeout:
                 print('Idle for too long...\nClosing session.')
+                self.server_socket.settimeout(None)
+                return
+            except KeyboardInterrupt:
+                print('Application has forcibly stopped.\nClosing session')
                 self.server_socket.settimeout(None)
                 return
 
@@ -293,55 +351,67 @@ class Receiver():
             if header[2] == 0:
                 file_name = header_data[9:]
                 file_name = file_name.decode()
-                print(file_name)
 
         while True:
-            data, addr = self.server_socket.recvfrom(1500)
-            flag, length, flag_id, crc = unpackHeader(data)
-            msg = data[9:]
+            try:
+                data, addr = self.server_socket.recvfrom(1500)
+                flag, length, flag_id, crc = unpackHeader(data)
+                msg = data[9:]
 
-            this_crc = crc32(msg)
+                this_crc = crc32(msg)
 
-            if crc != this_crc:
-                total_packets += 1
-                print(f'Packet {flag_id} rejected')
-                self.server_socket.sendto(createHeader(32), addr)
-                continue
-            else:
-                total_packets += 1
-                accepted_packets += 1
-                total_bytes += length
-                print(f'Packet {flag_id} accepted')
+                if crc != this_crc:
+                    total_packets += 1
+                    print(f'Packet {flag_id} rejected')
+                    self.server_socket.sendto(createHeader(32), addr)
+                    continue
+                else:
+                    total_packets += 1
+                    accepted_packets += 1
+                    total_bytes += length
+                    print(f'Packet {flag_id} with size of {length}B accepted')
 
-                if type == 't':
-                    full_message.append(msg.decode('utf-8'))
-                elif type == 'f':
-                    full_message.append(msg)
+                    if type == 't':
+                        full_message.append(msg.decode('utf-8'))
+                    elif type == 'f':
+                        full_message.append(msg)
 
-                if flag == 4 or flag == 8:
-                    self.server_socket.sendto(createHeader(16), addr)
-                elif flag > 64:
-                    self.server_socket.sendto(createHeader(80), addr)
-                    print('Message received successfully')
-                    break
+                    if flag == 4 or flag == 8:
+                        self.server_socket.sendto(createHeader(16), addr)
+                    elif flag > 64:
+                        self.server_socket.sendto(createHeader(80), addr)
+                        print('Message received successfully')
+                        break
+            except socket.timeout:
+                print('Session got terminated')
+                return 0
 
         if type == 't':
             print('Message: ', ''.join(full_message))
 
         elif type == 'f':
-            transFile = open(file_name, 'wb')
+            transFile = None
+
+            file_name = self.dest_file_path + file_name
+            try:
+                transFile = open(file_name, 'wb')
+            except PermissionError:
+                print('Insufficient permission to write a file')
+                return None
 
             for part in full_message:
                 transFile.write(part)
             transFile.close()
 
             file_size = os.path.getsize(file_name)/1024**2
-            file_path = os.path.abspath(file_name)
-            print(f'File {file_name} with size of {file_size:.2f} MB was saved at {file_path}')
+            files_path = os.path.abspath(file_name)
+            print(f'File {file_name} with size of {file_size:.2f} MB was saved at {files_path}')
 
         print(f'Total received packets: {total_packets}')
         print(f'Accepted out of total: {accepted_packets}/{total_packets}')
-        print(f'Total size of accepted packets {(total_bytes / 1024 ** 2):.2f} MB')
+        print(f'Total size of accepted packets {total_bytes}B')
+
+        return None
 
 
 def createHeader(flag, length=0, fragId=0, crc=0):

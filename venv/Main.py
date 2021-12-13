@@ -145,6 +145,9 @@ class Sender():
             zeroLength = len(zeroMsg)
             zeroHeader = createHeader(9, zeroLength, 0, zeroCrc)
 
+            print(f'Absolute file path: {os.path.abspath(file_path)}')
+            print(f'Name of file: {zeroMsg.decode()}')
+
             # SEND INITIALIZATION PACKET WITH THE FILE NAME
             while True:
                 try:

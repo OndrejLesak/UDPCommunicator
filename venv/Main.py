@@ -164,7 +164,7 @@ class Sender():
                     print('Timed out')
                     return
 
-        print(f'{number_of_fragments} will be sent.')
+        print(f'{number_of_fragments} will be sent. Maximum of {fragment_size}B each.')
 
         while True:
             message = msg[:fragment_size]
@@ -231,11 +231,12 @@ class Sender():
                 while True:
                     try:
                         self.client_socket.settimeout(10)
+                        print(f'Sending packet number {frag_id} with size of {msgLength}')
                         self.client_socket.sendto(header + message, to_whom)
                         response = self.client_socket.recv(1500)
                         response = unpackHeader(response)
                         if response[0] == 32:  # NACK
-                            print(f'Error while sending packet {frag_id}')
+                            print(f'Error while sending packet {frag_id}B')
                             break
                         elif response[0] == 16:  # ACK
                             frag_id += 1

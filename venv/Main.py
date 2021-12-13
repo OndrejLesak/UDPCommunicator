@@ -62,6 +62,8 @@ class Sender():
         msgLength = 0
         msg = ''
 
+        doimp = input('\'D\' pre supstenie doimplementacneho variantu ulohy: ' )
+
         fragment_size = int(input('Enter fragment size (Bytes): '))
 
         while fragment_size > 1463 or fragment_size <= 0:
@@ -69,6 +71,7 @@ class Sender():
             fragment_size = int(input('Enter fragment size (Bytes): '))
 
         err = int(input('Enter how many errors do you expect: ')) # number of errors
+
 
         # init message
         if msg_type == 't':
@@ -158,7 +161,7 @@ class Sender():
                     print('Timed out')
                     return
 
-        print(f'{number_of_fragments} will be send.')
+        print(f'{number_of_fragments} will be sent.')
 
         while True:
             message = msg[:fragment_size]
@@ -166,42 +169,82 @@ class Sender():
             crc = crc32(message)
 
             # INITIALIZE HEADER
-            if frag_id == number_of_fragments:
-                if msg_type == 't':
-                    header = createHeader(68, msgLength, frag_id, crc) # LAST TEXT PACKET
-                elif msg_type == 'f':
-                    header = createHeader(72, msgLength, frag_id, crc) # LAST FILE PACKET
+            if doimp == 'D':
+                if (number_of_fragments % 2 != 0 and frag_id == number_of_fragments-1) or (number_of_fragments % 2 == 0 and frag_id == number_of_fragments):
+                    if msg_type == 't':
+                        header = createHeader(68, msgLength, frag_id, crc)  # LAST TEXT PACKET
+                    elif msg_type == 'f':
+                        header = createHeader(72, msgLength, frag_id, crc)  # LAST FILE PACKET
+                else:
+                    if msg_type == 't':
+                        header = createHeader(4, msgLength, frag_id, crc)  # TEXT PACKET
+                    elif msg_type == 'f':
+                        header = createHeader(8, msgLength, frag_id, crc)  # FILE PACKET
+
             else:
-                if msg_type == 't':
-                    header = createHeader(4, msgLength, frag_id, crc) # TEXT PACKET
-                elif msg_type == 'f':
-                    header = createHeader(8, msgLength, frag_id, crc) # FILE PACKET
+                if frag_id == number_of_fragments:
+                    if msg_type == 't':
+                        header = createHeader(68, msgLength, frag_id, crc) # LAST TEXT PACKET
+                    elif msg_type == 'f':
+                        header = createHeader(72, msgLength, frag_id, crc) # LAST FILE PACKET
+                else:
+                    if msg_type == 't':
+                        header = createHeader(4, msgLength, frag_id, crc) # TEXT PACKET
+                    elif msg_type == 'f':
+                        header = createHeader(8, msgLength, frag_id, crc) # FILE PACKET
 
             if err > 0: # error simulation
                 if random.random() < 0.5:
                     message = self.createError(message)
                     err -= 1
 
-            while True:
-                try:
-                    self.client_socket.settimeout(10)
-                    self.client_socket.sendto(header + message, to_whom)
-                    response = self.client_socket.recv(1500)
-                    response = unpackHeader(response)
-                    if response[0] == 32: # NACK
-                        print(f'Error while sending packet {frag_id}')
-                        break
-                    elif response[0] == 16: # ACK
-                        frag_id += 1
-                        msg = msg[fragment_size:]
-                        break
-                    elif response[0] == 80: # FIN ACK
-                        print('Message sent successfully')
-                        return
+            if doimp == 'D':
+                if frag_id % 2 == 0:
+                    while True:
+                        try:
+                            self.client_socket.settimeout(10)
+                            self.client_socket.sendto(header + message, to_whom)
+                            response = self.client_socket.recv(1500)
+                            response = unpackHeader(response)
+                            if response[0] == 32: # NACK
+                                print(f'Error while sending packet {frag_id}')
+                                break
+                            elif response[0] == 16: # ACK
+                                frag_id += 1
+                                msg = msg[fragment_size:]
+                                break
+                            elif response[0] == 80: # FIN ACK
+                                print('Message sent successfully')
+                                return
 
-                except (socket.timeout, ConnectionResetError):
-                    print('Message not sent')
-                    return
+                        except (socket.timeout, ConnectionResetError):
+                            print('Message not sent')
+                            return
+                else:
+                    frag_id += 1
+                    msg = msg[fragment_size:]
+
+            else:
+                while True:
+                    try:
+                        self.client_socket.settimeout(10)
+                        self.client_socket.sendto(header + message, to_whom)
+                        response = self.client_socket.recv(1500)
+                        response = unpackHeader(response)
+                        if response[0] == 32:  # NACK
+                            print(f'Error while sending packet {frag_id}')
+                            break
+                        elif response[0] == 16:  # ACK
+                            frag_id += 1
+                            msg = msg[fragment_size:]
+                            break
+                        elif response[0] == 80:  # FIN ACK
+                            print('Message sent successfully')
+                            return
+
+                    except (socket.timeout, ConnectionResetError):
+                        print('Message not sent')
+                        return
 
 
     def createError(self, message):
